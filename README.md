@@ -1,9 +1,3 @@
-# Regular-Expression-to-minimized-DFA
-This program creates a minimized DFA(using hopcroft algorithm) of the input regular expression. This is done by first converting the regular expression to NFA, then converting NFA to DFA and finally minimizing it.
-
-
-
-
-Open the terminal.
-Type the command ./command.txt.
-Done.
+Open the terminal and cd to the folder renfadfa
+Type the command ./command.txt
+Done !

@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
-import { compileRegex, simulate, type AutomataPipeline, type Automaton, type AutomatonTransition } from './automata';
+import { compileRegex, simulate, type AutomataPipeline, type Automaton, type AutomatonTransition, type StoryPhase } from './automata';
 import './style.css';
 
-type Stage = keyof AutomataPipeline;
+type Stage = 'nfa' | 'dfa' | 'minimized';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
@@ -44,10 +44,21 @@ app.innerHTML = `
               <span class="stage-arrow" aria-hidden="true">→</span>
               <button class="stage-tab is-active" data-stage="minimized" role="tab" type="button"><span class="tab-index">03</span>MINIMIZED</button>
             </div>
-            <button id="reset-camera" class="icon-button" type="button" title="Reset camera" aria-label="Reset camera"><span aria-hidden="true">⌖</span></button>
+            <div class="graph-actions"><button id="zoom-out" class="icon-button" type="button" title="Zoom out" aria-label="Zoom out">−</button><button id="zoom-in" class="icon-button" type="button" title="Zoom in" aria-label="Zoom in">+</button><button id="reset-camera" class="icon-button" type="button" title="Reset view" aria-label="Reset view"><span aria-hidden="true">⌖</span></button></div>
           </div>
           <div class="graph-heading"><div><span id="graph-stage-kicker" class="graph-kicker">STAGE 03 / MINIMIZED DFA</span><h2 id="graph-title">The smallest equivalent machine</h2></div><div class="graph-count"><strong id="state-count">—</strong><span>STATES</span></div></div>
-          <div id="graph-mount" class="graph-mount" aria-label="Interactive three dimensional automaton graph"><div class="graph-corner corner-tl">FORM / GRAPH VIEW</div><div class="graph-corner corner-tr">DRAG TO ORBIT · SCROLL TO ZOOM</div><div class="graph-legend"><span><i class="legend-dot start-dot"></i>START</span><span><i class="legend-dot final-dot"></i>FINAL</span><span><i class="legend-dot active-dot"></i>ACTIVE PATH</span></div><div id="graph-empty" class="graph-empty" hidden>Compile an expression to build this automaton.</div></div>
+          <div class="graph-frame">
+            <div id="graph-viewport" class="graph-viewport" role="region" aria-label="Three dimensional automaton graph"><div id="graph-mount" class="graph-mount"></div></div>
+            <div class="graph-overlays"><div class="graph-corner corner-tl">FORM / GRAPH VIEW</div><div class="graph-corner corner-tr">DRAG TO ORBIT · WHEEL TO ZOOM</div><div class="graph-legend"><span><i class="legend-dot start-dot"></i>START</span><span><i class="legend-dot final-dot"></i>FINAL</span><span><i class="legend-dot active-dot"></i>ACTIVE STEP</span></div><div id="graph-empty" class="graph-empty" hidden>Compile an expression to build this automaton.</div></div>
+          </div>
+          <section class="walkthrough" aria-label="Step-by-step automata construction">
+            <div class="walkthrough-main">
+              <div class="walkthrough-copy"><div class="story-meta"><span id="story-phase" class="story-phase-tag">BUILD SEQUENCE</span><span id="story-count" class="story-count">READY</span></div><h3 id="story-title">Follow the construction</h3><p id="story-description">Advance through the real steps used to build and minimize this automaton.</p></div>
+              <div class="story-controls"><button id="story-previous" class="story-control" type="button" title="Previous step" aria-label="Previous step">←</button><button id="story-play" class="story-control story-play" type="button" title="Play walkthrough" aria-label="Play walkthrough">▶</button><button id="story-next" class="story-control" type="button" title="Next step" aria-label="Next step">→</button></div>
+            </div>
+            <div class="story-range-row"><input id="story-range" type="range" min="0" max="0" value="0" aria-label="Walkthrough step" /><span id="story-range-count" class="story-range-count">0 / 0</span></div>
+            <div class="story-phases" aria-label="Jump to algorithm phase"><button class="story-phase-button" data-phase="nfa" type="button">01 <span>ε-NFA</span></button><button class="story-phase-button" data-phase="dfa" type="button">02 <span>SUBSETS</span></button><button class="story-phase-button" data-phase="partition" type="button">03 <span>PARTITIONS</span></button><button class="story-phase-button" data-phase="minimized" type="button">04 <span>MINIMIZED</span></button></div>
+          </section>
           <div class="graph-footer"><span><i class="pulse-dot"></i> LIVE AUTOMATON</span><span id="graph-alphabet">ALPHABET —</span><span id="graph-edge-count">— TRANSITIONS</span></div>
         </div>
 
@@ -79,23 +90,25 @@ const regexInput = document.querySelector<HTMLInputElement>('#regex-input')!;
 const testInput = document.querySelector<HTMLInputElement>('#test-input')!;
 const compileButton = document.querySelector<HTMLButtonElement>('#compile-button')!;
 const message = document.querySelector<HTMLSpanElement>('#compile-message')!;
+const graphViewport = document.querySelector<HTMLDivElement>('#graph-viewport')!;
 const graphMount = document.querySelector<HTMLDivElement>('#graph-mount')!;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#e9ece5');
 const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
 camera.position.set(0, 0, 13);
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.setClearColor('#e9ece5', 1);
 renderer.domElement.className = 'graph-canvas';
 const labelRenderer = new CSS2DRenderer();
 labelRenderer.domElement.className = 'graph-labels';
 graphMount.prepend(renderer.domElement, labelRenderer.domElement);
-const controls = new OrbitControls(camera, labelRenderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.enablePan = true;
+controls.enableZoom = true;
 controls.minDistance = 5;
 controls.maxDistance = 30;
 controls.maxPolarAngle = Math.PI * 0.83;
@@ -103,12 +116,9 @@ scene.add(new THREE.HemisphereLight('#ffffff', '#7f9085', 2.3));
 const keyLight = new THREE.DirectionalLight('#ffffff', 2.2);
 keyLight.position.set(-4, 7, 8);
 scene.add(keyLight);
-const grid = new THREE.GridHelper(30, 30, '#bdc7bd', '#d4dbd2');
-grid.position.y = -3.2;
-(scene.add(grid));
 const graphGroup = new THREE.Group();
 scene.add(graphGroup);
-const edgeCurves: THREE.QuadraticBezierCurve3[] = [];
+const edgeCurves: THREE.Curve<THREE.Vector3>[] = [];
 const particles: THREE.Mesh[] = [];
 let pipeline: AutomataPipeline | null = null;
 let selectedStage: Stage = 'minimized';
@@ -116,8 +126,25 @@ let simulationPath: string[] = [];
 let simulationStep = 0;
 let isRunning = false;
 let lastResult: 'accepted' | 'rejected' | null = null;
+let activeStoryIndex = -1;
+let storyTimer = 0;
+let hasCameraFrame = false;
+
+type StoryStage = StoryPhase;
+
+function currentStoryStep() {
+  return activeStoryIndex >= 0 ? pipeline?.story[activeStoryIndex] ?? null : null;
+}
 
 function currentAutomaton(): Automaton | null {
+  return currentStoryStep()?.automaton ?? pipeline?.[selectedStage] ?? null;
+}
+
+function currentLayoutAutomaton(): Automaton | null {
+  const phase = currentStoryStep()?.phase;
+  if (phase === 'nfa') return pipeline?.nfa ?? null;
+  if (phase === 'dfa' || phase === 'partition') return pipeline?.dfa ?? null;
+  if (phase === 'minimized') return pipeline?.minimized ?? null;
   return pipeline?.[selectedStage] ?? null;
 }
 
@@ -137,12 +164,56 @@ function clearGraph(): void {
 
 function graphPositions(automaton: Automaton): Map<string, THREE.Vector3> {
   const positions = new Map<string, THREE.Vector3>();
-  const count = automaton.states.length;
-  const radius = Math.max(2.3, count * 0.62);
-  automaton.states.forEach((state, index) => {
-    const angle = count === 1 ? 0 : Math.PI * 2 * index / count - Math.PI / 2;
-    positions.set(state, new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * radius * 0.65, 0));
-  });
+  const order = new Map(automaton.states.map((state, index) => [state, index]));
+  const depths = new Map<string, number>();
+  const queue: string[] = [];
+  let maxDepth = 0;
+
+  for (const root of [automaton.start, ...automaton.states]) {
+    if (depths.has(root)) continue;
+    const rootDepth = depths.size ? maxDepth + 1 : 0;
+    depths.set(root, rootDepth);
+    queue.push(root);
+    while (queue.length) {
+      const state = queue.shift()!;
+      const depth = depths.get(state)!;
+      maxDepth = Math.max(maxDepth, depth);
+      for (const transition of automaton.transitions) {
+        if (transition.from !== state || depths.has(transition.to)) continue;
+        depths.set(transition.to, depth + 1);
+        queue.push(transition.to);
+      }
+    }
+  }
+
+  const layers = new Map<number, string[]>();
+  for (const state of automaton.states) {
+    const depth = depths.get(state) ?? 0;
+    const layer = layers.get(depth) ?? [];
+    layer.push(state);
+    layers.set(depth, layer);
+  }
+  const rowByState = new Map<string, number>();
+  const portrait = graphViewport.clientWidth / graphViewport.clientHeight < 0.82;
+
+  for (let depth = 0; depth <= maxDepth; depth++) {
+    const layer = layers.get(depth) ?? [];
+    layer.sort((left, right) => {
+      const barycenter = (state: string) => {
+        const parents = automaton.transitions.filter((edge) => edge.to === state && rowByState.has(edge.from));
+        return parents.length ? parents.reduce((sum, edge) => sum + rowByState.get(edge.from)!, 0) / parents.length : order.get(state)!;
+      };
+      return barycenter(left) - barycenter(right) || order.get(left)! - order.get(right)!;
+    });
+    layer.forEach((state, index) => {
+      const row = index - (layer.length - 1) / 2;
+      rowByState.set(state, row);
+      const along = (depth - maxDepth / 2) * 3.1;
+      positions.set(state, portrait
+        ? new THREE.Vector3(row * 2.1, -along, 0)
+        : new THREE.Vector3(along, -row * 2.1, 0));
+    });
+  }
   return positions;
 }
 
@@ -154,36 +225,62 @@ function pathHasEdge(transition: AutomatonTransition): boolean {
   return false;
 }
 
-function renderGraph(): void {
+function renderGraph(resetCamera = false): void {
   clearGraph();
   const automaton = currentAutomaton();
-  if (!automaton) return;
-  const positions = graphPositions(automaton);
+  const layoutAutomaton = currentLayoutAutomaton();
+  if (!automaton || !layoutAutomaton) return;
+  const positions = graphPositions(layoutAutomaton);
+  const layoutBounds = new THREE.Box3().setFromPoints([...positions.values()]);
+  const layoutSize = layoutBounds.getSize(new THREE.Vector3());
+  const canvasWidth = graphViewport.clientWidth;
+  const canvasHeight = graphViewport.clientHeight;
+  if (!canvasWidth || !canvasHeight) return;
+  graphMount.style.width = '100%';
+  graphMount.style.height = '100%';
+  camera.aspect = canvasWidth / canvasHeight;
+  renderer.setSize(canvasWidth, canvasHeight);
+  labelRenderer.setSize(canvasWidth, canvasHeight);
+  const storyStep = currentStoryStep();
+  const focusStates = new Set(storyStep?.focusStates ?? []);
+  const partitionPalette = ['#78b79c', '#e5a079', '#7ba6b2', '#c1a9ca', '#ccb957', '#8b9fb7'];
+  const partitionIndex = (state: string) => storyStep?.phase === 'partition' ? storyStep.groups?.findIndex((group) => group.includes(state)) ?? -1 : -1;
   const visited = new Set(simulationPath.slice(0, simulationStep + 1));
 
   for (const transition of automaton.transitions) {
     const from = positions.get(transition.from)!;
     const to = positions.get(transition.to)!;
-    const active = pathHasEdge(transition);
-    let curve: THREE.QuadraticBezierCurve3;
+    const active = storyStep
+      ? storyStep.focusTransitions.some((edge) => edge.from === transition.from && edge.to === transition.to && edge.symbol === transition.symbol)
+      : pathHasEdge(transition);
+    let curve: THREE.Curve<THREE.Vector3>;
     if (transition.from === transition.to) {
-      curve = new THREE.QuadraticBezierCurve3(from, from.clone().add(new THREE.Vector3(0, 1.8, 0)), from.clone().add(new THREE.Vector3(0, 0.3, 0)));
+      curve = new THREE.CubicBezierCurve3(
+        from.clone().add(new THREE.Vector3(0.2, 0.25, 0)),
+        from.clone().add(new THREE.Vector3(0.76, 1.1, 0)),
+        from.clone().add(new THREE.Vector3(-0.76, 1.1, 0)),
+        from.clone().add(new THREE.Vector3(-0.2, 0.25, 0)),
+      );
     } else {
-      const midpoint = from.clone().add(to).multiplyScalar(0.5);
-      const direction = to.clone().sub(from);
-      const perpendicular = new THREE.Vector3(-direction.y, direction.x, 0).normalize();
+      const direction = to.clone().sub(from).normalize();
+      const edgeStart = from.clone().add(direction.clone().multiplyScalar(0.36));
+      const edgeEnd = to.clone().sub(direction.clone().multiplyScalar(0.39));
+      const midpoint = edgeStart.clone().add(edgeEnd).multiplyScalar(0.5);
+      const perpendicular = new THREE.Vector3(-direction.y, direction.x, 0);
       const duplicateCount = automaton.transitions.filter((edge) => edge.from === transition.from && edge.to === transition.to).length;
       const offset = duplicateCount > 1 ? (transition.symbol === automaton.alphabet[0] ? 0.55 : -0.55) : 0.14;
-      curve = new THREE.QuadraticBezierCurve3(from, midpoint.add(perpendicular.multiplyScalar(offset)), to);
+      curve = new THREE.QuadraticBezierCurve3(edgeStart, midpoint.add(perpendicular.multiplyScalar(offset)), edgeEnd);
     }
     edgeCurves.push(curve);
     const points = curve.getPoints(36);
     const geometry = new THREE.BufferGeometry().setFromPoints(points);
     const line = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: active ? '#d36b4c' : '#9ca9a0', transparent: true, opacity: active ? 0.95 : 0.75 }));
     graphGroup.add(line);
-    const tangent = curve.getTangent(0.96).normalize();
-    const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.105, 0.32, 12), new THREE.MeshStandardMaterial({ color: active ? '#d36b4c' : '#84948a', roughness: 0.6 }));
-    arrow.position.copy(curve.getPoint(0.96));
+    const arrowLength = 0.2;
+    const arrowT = Math.max(0, 1 - (arrowLength / 2 + 0.025) / curve.getLength());
+    const tangent = curve.getTangentAt(arrowT).normalize();
+    const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.075, arrowLength, 12), new THREE.MeshStandardMaterial({ color: active ? '#d36b4c' : '#84948a', roughness: 0.6 }));
+    arrow.position.copy(curve.getPointAt(arrowT));
     arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tangent);
     graphGroup.add(arrow);
 
@@ -191,22 +288,27 @@ function renderGraph(): void {
     labelElement.className = `edge-label${active ? ' edge-label-active' : ''}`;
     labelElement.textContent = transition.symbol ?? 'ε';
     const label = new CSS2DObject(labelElement);
-    label.position.copy(curve.getPoint(0.52));
+    label.position.copy(curve.getPointAt(0.5));
     graphGroup.add(label);
 
     const particle = new THREE.Mesh(new THREE.SphereGeometry(0.075, 12, 12), new THREE.MeshBasicMaterial({ color: '#d36b4c' }));
     particle.userData.curveIndex = edgeCurves.length - 1;
     particle.userData.offset = particles.length / Math.max(1, automaton.transitions.length);
+    particle.visible = active;
     graphGroup.add(particle);
     particles.push(particle);
   }
 
   for (const state of automaton.states) {
-    const active = visited.has(state);
+    const groupIndex = partitionIndex(state);
+    const active = storyStep
+      ? storyStep.phase !== 'partition' && focusStates.has(state)
+      : selectedStage === 'minimized' && simulationStep > 0 && visited.has(state);
     const final = automaton.finals.includes(state);
     const start = state === automaton.start;
-    const fill = active ? '#d36b4c' : final ? '#76b9a0' : '#f7f8f2';
-    const rim = start ? '#426e61' : active ? '#a64d38' : final ? '#4e937b' : '#9ba99f';
+    const groupColor = groupIndex >= 0 ? partitionPalette[groupIndex % partitionPalette.length] : null;
+    const fill = active ? '#d36b4c' : groupColor ?? (final ? '#76b9a0' : '#f7f8f2');
+    const rim = groupColor ?? (start ? '#426e61' : final ? '#4e937b' : active ? '#a64d38' : '#9ba99f');
     const node = new THREE.Mesh(
       new THREE.SphereGeometry(0.39, 32, 24),
       new THREE.MeshStandardMaterial({ color: fill, roughness: 0.36, metalness: 0.04, emissive: active ? '#6e2e1f' : '#000000', emissiveIntensity: active ? 0.26 : 0 }),
@@ -215,62 +317,81 @@ function renderGraph(): void {
     node.userData.baseY = node.position.y;
     graphGroup.add(node);
     const ring = new THREE.Mesh(new THREE.TorusGeometry(0.46, 0.035, 8, 36), new THREE.MeshBasicMaterial({ color: rim }));
-    ring.position.copy(node.position);
-    ring.rotation.x = Math.PI / 2;
+    ring.position.copy(node.position).add(new THREE.Vector3(0, 0, 0.25));
     graphGroup.add(ring);
     if (final) {
       const innerRing = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.018, 8, 36), new THREE.MeshBasicMaterial({ color: rim }));
-      innerRing.position.copy(node.position);
-      innerRing.rotation.x = Math.PI / 2;
+      innerRing.position.copy(node.position).add(new THREE.Vector3(0, 0, 0.25));
       graphGroup.add(innerRing);
     }
     const labelElement = document.createElement('div');
     labelElement.className = `node-label${active ? ' node-label-active' : ''}`;
     labelElement.textContent = state;
+    if (automaton.stateDetails?.[state]) {
+      const detail = document.createElement('small');
+      detail.textContent = automaton.stateDetails[state];
+      labelElement.append(detail);
+    }
     const label = new CSS2DObject(labelElement);
-    label.position.copy(node.position).add(new THREE.Vector3(0, -0.74, 0));
+    label.position.copy(node.position).add(new THREE.Vector3(0, -0.61, 0.05));
     graphGroup.add(label);
     if (start) {
       const startLabel = document.createElement('div');
       startLabel.className = 'start-label';
       startLabel.textContent = 'START';
       const startTag = new CSS2DObject(startLabel);
-      startTag.position.copy(node.position).add(new THREE.Vector3(0, 0.72, 0));
+      startTag.position.copy(node.position).add(new THREE.Vector3(0, 0.67, 0));
       graphGroup.add(startTag);
     }
   }
 
-  const center = new THREE.Vector3();
-  const box = new THREE.Box3().setFromObject(graphGroup);
-  box.getCenter(center);
-  controls.target.copy(center);
-  const size = box.getSize(new THREE.Vector3());
-  const span = Math.max(size.x, size.y, 5);
+  const center = layoutBounds.getCenter(new THREE.Vector3());
+  const fitWidth = Math.max(layoutSize.x + 2.2, 4.8);
+  const fitHeight = Math.max(layoutSize.y + 3.4, 5.2);
   const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
-  const verticalFit = span / (2 * Math.tan(halfFov));
-  const horizontalFit = size.x / (2 * Math.tan(halfFov) * camera.aspect);
-  camera.position.set(center.x, center.y, Math.max(9, verticalFit, horizontalFit) * 1.2);
+  const verticalFit = fitHeight / (2 * Math.tan(halfFov));
+  const horizontalFit = fitWidth / (2 * Math.tan(halfFov) * camera.aspect);
+  const viewDirection = resetCamera || !hasCameraFrame
+    ? new THREE.Vector3(0, 0, 1)
+    : camera.position.clone().sub(controls.target).normalize();
+  const viewDistance = Math.max(5, verticalFit, horizontalFit) * 1.12;
+  camera.position.copy(center).add(viewDirection.multiplyScalar(viewDistance));
+  controls.target.copy(center);
+  controls.minDistance = Math.max(1.2, Math.min(5, viewDistance * 0.15));
+  controls.maxDistance = Math.max(30, viewDistance * 5);
+  hasCameraFrame = true;
   camera.near = 0.1;
-  camera.far = Math.max(100, span * 8);
+  camera.far = Math.max(100, Math.max(layoutSize.x, layoutSize.y) * 10);
   camera.updateProjectionMatrix();
   controls.update();
   updateGraphMeta(automaton);
 }
 
 function updateGraphMeta(automaton: Automaton): void {
-  const labels: Record<Stage, string> = { nfa: 'NFA', dfa: 'DFA', minimized: 'MINIMIZED DFA' };
-  const descriptions: Record<Stage, string> = { nfa: 'Every path, before determinization', dfa: 'One state for each reachable subset', minimized: 'The smallest equivalent machine' };
-  document.querySelector('#graph-stage-kicker')!.textContent = `STAGE 0${selectedStage === 'nfa' ? 1 : selectedStage === 'dfa' ? 2 : 3} / ${labels[selectedStage]}`;
-  document.querySelector('#graph-title')!.textContent = descriptions[selectedStage];
+  const storyStep = currentStoryStep();
+  const phaseNames: Record<StoryStage, string> = { nfa: 'EPSILON-NFA', dfa: 'SUBSET CONSTRUCTION', partition: 'PARTITION REFINEMENT', minimized: 'MINIMIZED DFA' };
+  const descriptions: Record<StoryStage, string> = { nfa: 'Thompson epsilon-NFA', dfa: 'Subset construction', partition: 'DFA partition refinement', minimized: 'Equivalent states merged' };
+  document.querySelector('#graph-stage-kicker')!.textContent = storyStep
+    ? `BUILD STEP ${String(activeStoryIndex + 1).padStart(2, '0')} / ${phaseNames[storyStep.phase]}`
+    : `STAGE 0${selectedStage === 'nfa' ? 1 : selectedStage === 'dfa' ? 2 : 3} / ${phaseNames[selectedStage]}`;
+  document.querySelector('#graph-title')!.textContent = storyStep ? descriptions[storyStep.phase] : descriptions[selectedStage];
   document.querySelector('#state-count')!.textContent = String(automaton.states.length).padStart(2, '0');
   document.querySelector('#graph-alphabet')!.textContent = `ALPHABET { ${automaton.alphabet.join(', ') || 'ε'} }`;
   document.querySelector('#graph-edge-count')!.textContent = `${automaton.transitions.length} TRANSITIONS`;
 }
 
+function zoomCamera(factor: number): void {
+  const offset = camera.position.clone().sub(controls.target);
+  const distance = THREE.MathUtils.clamp(offset.length() * factor, controls.minDistance, controls.maxDistance);
+  camera.position.copy(controls.target).add(offset.normalize().multiplyScalar(distance));
+  controls.update();
+}
+
 function renderTable(): void {
   const automaton = currentAutomaton();
   const wrap = document.querySelector<HTMLDivElement>('#transition-table')!;
-  document.querySelector('#table-stage')!.textContent = selectedStage === 'minimized' ? 'MINIMIZED' : selectedStage.toUpperCase();
+  const storyStep = currentStoryStep();
+  document.querySelector('#table-stage')!.textContent = storyStep?.phase === 'partition' ? 'PARTITIONS' : selectedStage === 'minimized' ? 'MINIMIZED' : selectedStage.toUpperCase();
   if (!automaton) {
     wrap.innerHTML = '<p class="table-empty">Compile an expression to see its transitions.</p>';
     return;
@@ -328,6 +449,7 @@ function resetSimulation(): void {
 
 function stepSimulation(): void {
   if (!pipeline || isRunning) return;
+  focusMinimizedForSimulation();
   const symbols = [...testInput.value];
   if (simulationStep >= symbols.length) {
     const outcome = simulate(pipeline.minimized, testInput.value);
@@ -359,7 +481,9 @@ function showSimulationError(text: string): void {
 function compile(): void {
   try {
     const nextPipeline = compileRegex(regexInput.value);
+    stopStoryPlayback();
     pipeline = nextPipeline;
+    activeStoryIndex = -1;
     selectedStage = 'minimized';
     simulationPath = [nextPipeline.minimized.start];
     simulationStep = 0;
@@ -368,9 +492,10 @@ function compile(): void {
     message.className = 'compile-message is-success';
     document.querySelector('#graph-empty')!.setAttribute('hidden', '');
     syncStageTabs();
-    renderGraph();
+    renderGraph(true);
     renderTable();
     updateSimulation();
+    updateStoryControls();
   } catch (error) {
     message.textContent = error instanceof Error ? error.message : 'Could not compile this expression.';
     message.className = 'compile-message is-error';
@@ -385,6 +510,87 @@ function syncStageTabs(): void {
   });
 }
 
+function updateStoryControls(): void {
+  const steps = pipeline?.story ?? [];
+  const step = currentStoryStep();
+  const phaseNames: Record<StoryStage, string> = { nfa: '01 / EPSILON-NFA', dfa: '02 / DFA SUBSETS', partition: '03 / PARTITION REFINEMENT', minimized: '04 / MINIMIZED DFA' };
+  document.querySelector('#story-phase')!.textContent = step ? phaseNames[step.phase] : 'BUILD SEQUENCE';
+  document.querySelector('#story-count')!.textContent = step ? `STEP ${activeStoryIndex + 1} OF ${steps.length}` : `${steps.length} STEPS`;
+  document.querySelector('#story-title')!.textContent = step?.title ?? 'Follow the construction';
+  const partitionSummary = step?.phase === 'partition' && step.groups
+    ? ` Groups: ${step.groups.map((group, index) => `P${index + 1} { ${group.join(', ')} }`).join(' · ')}.`
+    : '';
+  document.querySelector('#story-description')!.textContent = `${step?.description ?? 'Advance through the real steps used to build and minimize this automaton.'}${partitionSummary}`;
+
+  const range = document.querySelector<HTMLInputElement>('#story-range')!;
+  range.max = String(Math.max(0, steps.length - 1));
+  range.value = String(Math.max(0, activeStoryIndex));
+  range.disabled = !steps.length;
+  document.querySelector('#story-range-count')!.textContent = step ? `${activeStoryIndex + 1} / ${steps.length}` : `0 / ${steps.length}`;
+  document.querySelector<HTMLButtonElement>('#story-previous')!.disabled = !steps.length || activeStoryIndex <= 0;
+  document.querySelector<HTMLButtonElement>('#story-next')!.disabled = !steps.length || activeStoryIndex >= steps.length - 1;
+  const playButton = document.querySelector<HTMLButtonElement>('#story-play')!;
+  playButton.textContent = storyTimer ? 'Ⅱ' : '▶';
+  playButton.title = storyTimer ? 'Pause walkthrough' : 'Play walkthrough';
+  playButton.setAttribute('aria-label', playButton.title);
+  document.querySelectorAll<HTMLButtonElement>('.story-phase-button').forEach((button) => {
+    const phase = button.dataset.phase as StoryStage;
+    button.classList.toggle('is-active', step?.phase === phase);
+    button.disabled = !steps.some((candidate) => candidate.phase === phase);
+  });
+}
+
+function setStoryStep(index: number): void {
+  if (!pipeline?.story.length) return;
+  const previousPhase = currentStoryStep()?.phase;
+  activeStoryIndex = Math.max(0, Math.min(index, pipeline.story.length - 1));
+  const step = pipeline.story[activeStoryIndex];
+  selectedStage = step.phase === 'partition' ? 'dfa' : step.phase;
+  syncStageTabs();
+  renderGraph(previousPhase !== step.phase);
+  renderTable();
+  updateStoryControls();
+}
+
+function stopStoryPlayback(): void {
+  if (storyTimer) window.clearInterval(storyTimer);
+  storyTimer = 0;
+  updateStoryControls();
+}
+
+function moveStoryStep(direction: -1 | 1): void {
+  const steps = pipeline?.story ?? [];
+  if (!steps.length) return;
+  stopStoryPlayback();
+  if (activeStoryIndex < 0) setStoryStep(direction > 0 ? 0 : steps.length - 1);
+  else setStoryStep(activeStoryIndex + direction);
+}
+
+function focusMinimizedForSimulation(): void {
+  if (!pipeline) return;
+  stopStoryPlayback();
+  activeStoryIndex = -1;
+  selectedStage = 'minimized';
+  syncStageTabs();
+  renderGraph();
+  renderTable();
+  updateStoryControls();
+}
+
+function toggleStoryPlayback(): void {
+  if (!pipeline?.story.length) return;
+  if (storyTimer) {
+    stopStoryPlayback();
+    return;
+  }
+  if (activeStoryIndex < 0 || activeStoryIndex === pipeline.story.length - 1) setStoryStep(0);
+  storyTimer = window.setInterval(() => {
+    if (!pipeline || activeStoryIndex >= pipeline.story.length - 1) stopStoryPlayback();
+    else setStoryStep(activeStoryIndex + 1);
+  }, 1050);
+  updateStoryControls();
+}
+
 compileButton.addEventListener('click', compile);
 regexInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') compile(); });
 document.querySelectorAll<HTMLButtonElement>('.example-chip').forEach((button) => {
@@ -396,18 +602,42 @@ document.querySelectorAll<HTMLButtonElement>('.example-chip').forEach((button) =
 document.querySelectorAll<HTMLButtonElement>('.stage-tab').forEach((button) => {
   button.addEventListener('click', () => {
     if (!pipeline) return;
+    stopStoryPlayback();
+    activeStoryIndex = -1;
     selectedStage = button.dataset.stage as Stage;
     syncStageTabs();
-    renderGraph();
+    renderGraph(true);
     renderTable();
+    updateStoryControls();
   });
 });
-document.querySelector<HTMLButtonElement>('#reset-camera')!.addEventListener('click', () => renderGraph());
+document.querySelector<HTMLButtonElement>('#story-previous')!.addEventListener('click', () => moveStoryStep(-1));
+document.querySelector<HTMLButtonElement>('#story-next')!.addEventListener('click', () => moveStoryStep(1));
+document.querySelector<HTMLButtonElement>('#story-play')!.addEventListener('click', toggleStoryPlayback);
+document.querySelector<HTMLInputElement>('#story-range')!.addEventListener('input', (event) => {
+  const index = Number((event.currentTarget as HTMLInputElement).value);
+  stopStoryPlayback();
+  setStoryStep(index);
+});
+document.querySelectorAll<HTMLButtonElement>('.story-phase-button').forEach((button) => {
+  button.addEventListener('click', () => {
+    const phase = button.dataset.phase as StoryStage;
+    const stepIndex = pipeline?.story.findIndex((step) => step.phase === phase) ?? -1;
+    if (stepIndex >= 0) {
+      stopStoryPlayback();
+      setStoryStep(stepIndex);
+    }
+  });
+});
+document.querySelector<HTMLButtonElement>('#zoom-in')!.addEventListener('click', () => zoomCamera(0.8));
+document.querySelector<HTMLButtonElement>('#zoom-out')!.addEventListener('click', () => zoomCamera(1.25));
+document.querySelector<HTMLButtonElement>('#reset-camera')!.addEventListener('click', () => renderGraph(true));
 document.querySelector<HTMLButtonElement>('#clear-button')!.addEventListener('click', resetSimulation);
 document.querySelector<HTMLButtonElement>('#step-button')!.addEventListener('click', stepSimulation);
 testInput.addEventListener('input', resetSimulation);
 document.querySelector<HTMLButtonElement>('#run-button')!.addEventListener('click', async () => {
   if (!pipeline || isRunning) return;
+  focusMinimizedForSimulation();
   resetSimulation();
   isRunning = true;
   const runButton = document.querySelector<HTMLButtonElement>('#run-button')!;
@@ -438,16 +668,19 @@ document.querySelector<HTMLButtonElement>('#run-button')!.addEventListener('clic
 });
 
 function resize(): void {
-  const width = graphMount.clientWidth;
-  const height = graphMount.clientHeight;
+  const width = graphViewport.clientWidth;
+  const height = graphViewport.clientHeight;
   if (!width || !height) return;
+  if (currentAutomaton()) {
+    renderGraph();
+    return;
+  }
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
   labelRenderer.setSize(width, height);
-  if (currentAutomaton()) renderGraph();
 }
-new ResizeObserver(resize).observe(graphMount);
+new ResizeObserver(resize).observe(graphViewport);
 window.addEventListener('resize', resize);
 function animate(time: number): void {
   requestAnimationFrame(animate);

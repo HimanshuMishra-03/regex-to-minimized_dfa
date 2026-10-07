@@ -10,12 +10,27 @@ export type Automaton = {
   finals: string[];
   alphabet: string[];
   transitions: AutomatonTransition[];
+  stateDetails?: Record<string, string>;
+};
+
+export type StoryPhase = 'nfa' | 'dfa' | 'partition' | 'minimized';
+
+export type VisualizationStep = {
+  phase: StoryPhase;
+  title: string;
+  description: string;
+  automaton: Automaton;
+  focusStates: string[];
+  focusTransitions: AutomatonTransition[];
+  scrollStates?: string[];
+  groups?: string[][];
 };
 
 export type AutomataPipeline = {
   nfa: Automaton;
   dfa: Automaton;
   minimized: Automaton;
+  story: VisualizationStep[];
 };
 
 type NfaState = { id: number; transitions: AutomatonTransition[] };
@@ -90,60 +105,89 @@ function toPostfix(regex: string): string[] {
   return output;
 }
 
-function buildNfa(regex: string): { states: NfaState[]; start: number; final: number; alphabet: string[] } {
+function buildNfa(regex: string): { states: NfaState[]; start: number; final: number; alphabet: string[]; story: VisualizationStep[] } {
   const postfix = toPostfix(regex);
   const states: NfaState[] = [];
   const fragments: Fragment[] = [];
   const alphabet = new Set<string>();
+  const story: VisualizationStep[] = [];
   const createState = () => {
     const id = states.length;
     states.push({ id, transitions: [] });
     return id;
   };
   const connect = (from: number, to: number, symbol: string | null) => {
-    states[from].transitions.push({ from: `q${from}`, to: `q${to}`, symbol });
+    const transition = { from: `q${from}`, to: `q${to}`, symbol };
+    states[from].transitions.push(transition);
+    return transition;
+  };
+  const recordStep = (title: string, description: string, focusStates: string[], focusTransitions: AutomatonTransition[], scrollStates = focusStates) => {
+    const currentStates = states.map((state) => `q${state.id}`);
+    const currentTransitions = states.flatMap((state) => state.transitions);
+    const currentStart = fragments[0]?.start ?? 0;
+    story.push({
+      phase: 'nfa',
+      title,
+      description,
+      automaton: {
+        states: currentStates,
+        start: `q${currentStart}`,
+        finals: fragments.map((fragment) => `q${fragment.end}`),
+        alphabet: [...alphabet].sort(),
+        transitions: [...currentTransitions],
+      },
+      focusStates,
+      focusTransitions: [...focusTransitions],
+      scrollStates,
+    });
   };
 
   for (const token of postfix) {
     if (!['.', '|', '*', '+', '?'].includes(token)) {
       const start = createState();
       const end = createState();
-      connect(start, end, token);
+      const transition = connect(start, end, token);
       alphabet.add(token);
       fragments.push({ start, end });
+      recordStep(`Create symbol fragment "${token}"`, `Add q${start} --${token}--> q${end}. Every literal begins as a two-state NFA fragment.`, [`q${start}`, `q${end}`], [transition]);
     } else if (token === '.') {
       const right = fragments.pop();
       const left = fragments.pop();
       if (!left || !right) throw new Error('Concatenation is missing an expression.');
-      connect(left.end, right.start, EPSILON);
+      const transition = connect(left.end, right.start, EPSILON);
       fragments.push({ start: left.start, end: right.end });
+      recordStep('Join the fragments', `Connect q${left.end} to q${right.start} with ε. The left fragment flows directly into the right.`, [`q${left.end}`, `q${right.start}`], [transition]);
     } else if (token === '|') {
       const right = fragments.pop();
       const left = fragments.pop();
       if (!left || !right) throw new Error('Choice requires an expression on both sides.');
       const start = createState();
       const end = createState();
-      connect(start, left.start, EPSILON);
-      connect(start, right.start, EPSILON);
-      connect(left.end, end, EPSILON);
-      connect(right.end, end, EPSILON);
+      const added = [
+        connect(start, left.start, EPSILON),
+        connect(start, right.start, EPSILON),
+        connect(left.end, end, EPSILON),
+        connect(right.end, end, EPSILON),
+      ];
       fragments.push({ start, end });
+      recordStep(`Add a choice fork for "|"`, `Create q${start} and q${end}. Epsilon branches enter either choice and merge at the new final state.`, [`q${start}`, `q${end}`, `q${left.start}`, `q${right.start}`], added, [`q${start}`, `q${left.start}`, `q${right.start}`]);
     } else {
       const operand = fragments.pop();
       if (!operand) throw new Error(`"${token}" is missing its expression.`);
       const start = createState();
       const end = createState();
-      connect(start, operand.start, EPSILON);
-      connect(operand.end, end, EPSILON);
-      if (token === '*' || token === '+') connect(operand.end, operand.start, EPSILON);
-      if (token === '*' || token === '?') connect(start, end, EPSILON);
+      const added = [connect(start, operand.start, EPSILON), connect(operand.end, end, EPSILON)];
+      if (token === '*' || token === '+') added.push(connect(operand.end, operand.start, EPSILON));
+      if (token === '*' || token === '?') added.push(connect(start, end, EPSILON));
       fragments.push({ start, end });
+      const operation = token === '*' ? 'Kleene star' : token === '+' ? 'One-or-more loop' : 'Optional path';
+      recordStep(`Wrap the fragment with ${operation}`, `Add q${start} and q${end}; epsilon edges ${token === '*' ? 'allow zero or repeated passes' : token === '+' ? 'allow repeated passes after the first' : 'allow either skipping or taking the fragment'}.`, [`q${start}`, `q${end}`, `q${operand.start}`, `q${operand.end}`], added);
     }
   }
 
   if (fragments.length !== 1) throw new Error('The expression could not be reduced to one automaton.');
   const fragment = fragments[0];
-  return { states, start: fragment.start, final: fragment.end, alphabet: [...alphabet].sort() };
+  return { states, start: fragment.start, final: fragment.end, alphabet: [...alphabet].sort(), story };
 }
 
 function epsilonClosure(seed: Iterable<number>, states: NfaState[]): number[] {
@@ -173,10 +217,35 @@ function stateName(index: number): string {
   return `S${index - 26}`;
 }
 
-function makeDfa(nfa: ReturnType<typeof buildNfa>): Automaton {
+function formatNfaSet(states: number[]): string {
+  return states.length ? `{ ${states.map((state) => `q${state}`).join(', ')} }` : '∅';
+}
+
+function makeDfa(nfa: ReturnType<typeof buildNfa>): { automaton: Automaton; story: VisualizationStep[] } {
   const subsets: number[][] = [epsilonClosure([nfa.start], nfa.states)];
   const indices = new Map<string, number>([[subsetKey(subsets[0]), 0]]);
   const transitions: AutomatonTransition[] = [];
+  const story: VisualizationStep[] = [];
+  const stateDetails: Record<string, string> = { A: formatNfaSet(subsets[0]) };
+  const recordStep = (title: string, description: string, focusStates: string[], focusTransitions: AutomatonTransition[]) => {
+    story.push({
+      phase: 'dfa',
+      title,
+      description,
+      automaton: {
+        states: subsets.map((_, index) => stateName(index)),
+        start: stateName(0),
+        finals: subsets.flatMap((subset, index) => subset.includes(nfa.final) ? [stateName(index)] : []),
+        alphabet: nfa.alphabet,
+        transitions: [...transitions],
+        stateDetails: { ...stateDetails },
+      },
+      focusStates,
+      focusTransitions,
+    });
+  };
+
+  recordStep('Take the start epsilon-closure', `The DFA start state A represents ε-closure({ q${nfa.start} }) = ${formatNfaSet(subsets[0])}.`, ['A'], []);
 
   for (let cursor = 0; cursor < subsets.length; cursor++) {
     if (subsets.length > MAX_DFA_STATES) throw new Error(`This expression creates more than ${MAX_DFA_STATES} DFA states. Try a shorter expression.`);
@@ -194,33 +263,64 @@ function makeDfa(nfa: ReturnType<typeof buildNfa>): Automaton {
         targetIndex = subsets.length;
         indices.set(key, targetIndex);
         subsets.push(target);
+        stateDetails[stateName(targetIndex)] = formatNfaSet(target);
       }
-      transitions.push({ from: stateName(cursor), to: stateName(targetIndex), symbol });
+      const transition = { from: stateName(cursor), to: stateName(targetIndex), symbol };
+      transitions.push(transition);
+      recordStep(
+        `Compute ${stateName(cursor)} on "${symbol}"`,
+        `move(${formatNfaSet(subsets[cursor])}, "${symbol}") reaches ${formatNfaSet([...moved].sort((left, right) => left - right))}; its epsilon-closure is ${formatNfaSet(target)}, named ${stateName(targetIndex)}.`,
+        [stateName(cursor), stateName(targetIndex)],
+        [transition],
+      );
     }
   }
 
-  return {
+  return { automaton: {
     states: subsets.map((_, index) => stateName(index)),
     start: stateName(0),
     finals: subsets.flatMap((subset, index) => subset.includes(nfa.final) ? [stateName(index)] : []),
     alphabet: nfa.alphabet,
     transitions,
-  };
+    stateDetails,
+  }, story };
 }
 
-function minimize(dfa: Automaton): Automaton {
+function minimize(dfa: Automaton): { automaton: Automaton; story: VisualizationStep[] } {
   const stateIndex = new Map(dfa.states.map((state, index) => [state, index]));
   const finalSet = new Set(dfa.finals);
+  const story: VisualizationStep[] = [];
   let groups = [
     dfa.states.map((_, index) => index).filter((index) => finalSet.has(dfa.states[index])),
     dfa.states.map((_, index) => index).filter((index) => !finalSet.has(dfa.states[index])),
   ].filter((group) => group.length);
 
   const targetFor = (state: string, symbol: string) => dfa.transitions.find((edge) => edge.from === state && edge.symbol === symbol)?.to;
+  const groupNames = (partition: number[][]) => partition.map((group) => group.map((index) => dfa.states[index]));
+  const recordPartition = (title: string, description: string, partition: number[][], focusStates: string[]) => {
+    story.push({
+      phase: 'partition',
+      title,
+      description,
+      automaton: dfa,
+      focusStates,
+      focusTransitions: [],
+      groups: groupNames(partition),
+    });
+  };
+
+  recordPartition(
+    'Separate accepting from non-accepting states',
+    `Start with final states { ${dfa.finals.join(', ') || 'none'} } and non-final states { ${dfa.states.filter((state) => !finalSet.has(state)).join(', ') || 'none'} }.`,
+    groups,
+    [...dfa.finals, ...dfa.states.filter((state) => !finalSet.has(state))],
+  );
+
   while (true) {
     const groupOf = new Map<number, number>();
     groups.forEach((group, groupIndex) => group.forEach((state) => groupOf.set(state, groupIndex)));
     const refined: number[][] = [];
+    let splitDescription = '';
 
     for (const group of groups) {
       const buckets = new Map<string, number[]>();
@@ -234,11 +334,28 @@ function minimize(dfa: Automaton): Automaton {
         bucket.push(index);
         buckets.set(signature, bucket);
       }
+      if (!splitDescription && buckets.size > 1) {
+        const [firstBucket, secondBucket] = [...buckets.values()];
+        const firstState = firstBucket[0];
+        const secondState = secondBucket[0];
+        const splitSymbol = dfa.alphabet.find((symbol) => {
+          const firstTarget = targetFor(dfa.states[firstState], symbol);
+          const secondTarget = targetFor(dfa.states[secondState], symbol);
+          const firstGroup = firstTarget === undefined ? -1 : groupOf.get(stateIndex.get(firstTarget)!);
+          const secondGroup = secondTarget === undefined ? -1 : groupOf.get(stateIndex.get(secondTarget)!);
+          return firstGroup !== secondGroup;
+        });
+        splitDescription = `${dfa.states[firstState]} and ${dfa.states[secondState]} must separate${splitSymbol ? ` because on "${splitSymbol}" they reach different groups` : ' because their transition signatures differ'}.`;
+      }
       refined.push(...buckets.values());
     }
 
-    if (refined.length === groups.length) break;
+    if (refined.length === groups.length) {
+      recordPartition('The partition is stable', 'No group can be split further: every state in a group transitions to the same groups for every symbol.', groups, groups.flat().map((index) => dfa.states[index]));
+      break;
+    }
     groups = refined;
+    recordPartition('Refine the partitions', splitDescription, groups, groups.flat().map((index) => dfa.states[index]));
   }
 
   groups.sort((left, right) => left.includes(0) ? -1 : right.includes(0) ? 1 : Math.min(...left) - Math.min(...right));
@@ -246,24 +363,65 @@ function minimize(dfa: Automaton): Automaton {
   const groupOf = new Map<number, number>();
   groups.forEach((group, groupIndex) => group.forEach((state) => groupOf.set(state, groupIndex)));
   const transitions: AutomatonTransition[] = [];
+  const stateDetails: Record<string, string> = {};
+  const minimizedStart = minimizedNames[groupOf.get(stateIndex.get(dfa.start)!)!];
+
+  groups.forEach((group, groupIndex) => {
+    const name = minimizedNames[groupIndex];
+    const members = group.map((state) => dfa.states[state]);
+    stateDetails[name] = `{ ${members.join(', ')} }`;
+    const states = minimizedNames.slice(0, groupIndex + 1);
+    story.push({
+      phase: 'minimized',
+      title: `Merge ${members.join(', ')} into ${name}`,
+      description: `${members.join(', ')} are equivalent, so they become one minimized state, ${name}.`,
+      automaton: {
+        states,
+        start: minimizedStart,
+        finals: groups.slice(0, groupIndex + 1).flatMap((candidate, index) => candidate.some((state) => finalSet.has(dfa.states[state])) ? [minimizedNames[index]] : []),
+        alphabet: dfa.alphabet,
+        transitions: [...transitions],
+        stateDetails: { ...stateDetails },
+      },
+      focusStates: [name],
+      focusTransitions: [],
+    });
+  });
 
   groups.forEach((group, groupIndex) => {
     const representative = dfa.states[group[0]];
     for (const symbol of dfa.alphabet) {
       const target = targetFor(representative, symbol);
       if (target !== undefined) {
-        transitions.push({ from: minimizedNames[groupIndex], to: minimizedNames[groupOf.get(stateIndex.get(target)!)!], symbol });
+        const transition = { from: minimizedNames[groupIndex], to: minimizedNames[groupOf.get(stateIndex.get(target)!)!], symbol };
+        transitions.push(transition);
+        story.push({
+          phase: 'minimized',
+          title: `Add ${transition.from} on "${symbol}" to ${transition.to}`,
+          description: `The representative ${representative} moves to ${target} on "${symbol}"; their equivalence groups become ${transition.from} → ${transition.to}.`,
+          automaton: {
+            states: minimizedNames,
+            start: minimizedStart,
+            finals: groups.flatMap((candidate, index) => candidate.some((state) => finalSet.has(dfa.states[state])) ? [minimizedNames[index]] : []),
+            alphabet: dfa.alphabet,
+            transitions: [...transitions],
+            stateDetails: { ...stateDetails },
+          },
+          focusStates: [transition.from, transition.to],
+          focusTransitions: [transition],
+        });
       }
     }
   });
 
-  return {
+  return { automaton: {
     states: minimizedNames,
-    start: minimizedNames[groupOf.get(0)!],
+    start: minimizedStart,
     finals: groups.flatMap((group, index) => group.some((state) => finalSet.has(dfa.states[state])) ? [minimizedNames[index]] : []),
     alphabet: dfa.alphabet,
     transitions,
-  };
+    stateDetails,
+  }, story };
 }
 
 function asNfa(nfa: ReturnType<typeof buildNfa>): Automaton {
@@ -280,7 +438,13 @@ export function compileRegex(regex: string): AutomataPipeline {
   if (regex.length > MAX_REGEX_LENGTH) throw new Error(`Keep the expression under ${MAX_REGEX_LENGTH + 1} characters.`);
   const nfa = buildNfa(regex);
   const dfa = makeDfa(nfa);
-  return { nfa: asNfa(nfa), dfa, minimized: minimize(dfa) };
+  const minimized = minimize(dfa.automaton);
+  return {
+    nfa: asNfa(nfa),
+    dfa: dfa.automaton,
+    minimized: minimized.automaton,
+    story: [...nfa.story, ...dfa.story, ...minimized.story],
+  };
 }
 
 export function simulate(automaton: Automaton, input: string): { path: string[]; accepted: boolean; error?: string } {
