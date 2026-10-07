@@ -26,3 +26,8 @@
 *.exe
 *.out
 *.app
+
+# Frontend dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
