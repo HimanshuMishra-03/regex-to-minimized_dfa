@@ -28,6 +28,7 @@
 *.app
 
 # Frontend dependencies and build output
+.vite/
 node_modules/
 dist/
 *.tsbuildinfo
