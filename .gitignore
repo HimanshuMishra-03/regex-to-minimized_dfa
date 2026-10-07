@@ -32,3 +32,7 @@
 node_modules/
 dist/
 *.tsbuildinfo
+
+# Generated automata tables
+NFA.txt
+DFA.txt
